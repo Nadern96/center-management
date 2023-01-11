@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"regexp"
@@ -14,6 +15,7 @@ import (
 	"github.com/nadern96/center-management/db"
 	"github.com/nadern96/center-management/models"
 	"github.com/nadern96/center-management/utils"
+	"github.com/thanhpk/randstr"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -59,6 +61,11 @@ func SignUp() gin.HandlerFunc {
 		if validationErr := validate.Struct(&user); validationErr != nil {
 			log.Println(validationErr)
 			c.JSON(http.StatusBadRequest, gin.H{"error": validationErr})
+			return
+		}
+
+		if *user.Password != *user.PasswordConfirm {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Passwords do not match"})
 			return
 		}
 
@@ -109,7 +116,8 @@ func SignUp() gin.HandlerFunc {
 		}
 
 		otp := utils.GenerateOTP()
-		err = utils.SendEmail(*user.Email, otp)
+
+		err = utils.SendVerificationEmail(*user.Email, otp)
 		if err != nil {
 			log.Println("send email: ", err)
 		}
@@ -167,7 +175,16 @@ func SignIn() gin.HandlerFunc {
 			log.Println(err)
 		}
 
-		c.JSON(http.StatusFound, foundUser)
+		c.JSON(http.StatusFound, models.User{
+			ID:           foundUser.ID,
+			FirstName:    foundUser.FirstName,
+			LastName:     foundUser.LastName,
+			Email:        foundUser.Email,
+			Phone:        foundUser.Phone,
+			Token:        foundUser.Token,
+			RefreshToken: foundUser.RefreshToken,
+			IsActive:     foundUser.IsActive,
+		})
 	}
 }
 
@@ -219,5 +236,94 @@ func Verify() gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, "User Successfully Verfied!")
+	}
+}
+
+func ForgotPassword() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var userCredential models.ForgotPasswordInput
+		if err := c.BindJSON(&userCredential); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+		defer cancel()
+
+		var user models.User
+		err := userCollection.FindOne(ctx, bson.M{"email": userCredential.Email}).Decode(&user)
+		if err != nil {
+			log.Println(err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "email is incorrect"})
+			return
+		}
+
+		if !user.IsVerified {
+			log.Println("User is not verified")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "User is not verified"})
+			return
+		}
+
+		// Generate Verification Code
+		resetToken := randstr.String(20)
+
+		passwordResetToken := utils.Encode(resetToken)
+
+		filter := bson.D{{Key: "email", Value: strings.ToLower(userCredential.Email)}}
+		update := bson.D{{Key: "$set", Value: bson.D{{Key: "passwordResetToken", Value: passwordResetToken}, {Key: "passwordResetAt", Value: time.Now().Add(time.Minute * 15)}}}}
+		_, err = userCollection.UpdateOne(ctx, filter, update)
+		if err != nil {
+			log.Println(err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		err = utils.SendResetPasswordEmail(*user.Email, resetToken)
+		if err != nil {
+			log.Println("send email: ", err)
+		}
+
+		message := "You will receive a reset email if user with that email exist"
+		c.JSON(http.StatusOK, message)
+	}
+}
+func ResetPassword() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		resetToken := c.Params.ByName("resetToken")
+		var userCredential models.ResetPasswordInput
+
+		if err := c.BindJSON(&userCredential); err != nil {
+			log.Println(err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		if userCredential.Password != userCredential.PasswordConfirm {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Passwords do not match"})
+			return
+		}
+
+		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+		defer cancel()
+
+		hashedPassword := hashPassword(userCredential.Password)
+		passwordResetToken := utils.Encode(resetToken)
+
+		// Update User in Database
+		query := bson.D{{Key: "passwordResetToken", Value: passwordResetToken}}
+		update := bson.D{{Key: "$set", Value: bson.D{{Key: "password", Value: hashedPassword}}}, {Key: "$unset", Value: bson.D{{Key: "passwordResetToken", Value: ""}, {Key: "passwordResetAt", Value: ""}}}}
+		result, err := userCollection.UpdateOne(ctx, query, update)
+
+		if result.MatchedCount == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Token is invalid or has expired"})
+			return
+		}
+
+		if err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, "Password data updated successfully")
 	}
 }

@@ -10,4 +10,6 @@ func AuthRoutes(routes *gin.Engine) {
 	group.POST("/signup", controllers.SignUp())
 	group.POST("/signin", controllers.SignIn())
 	group.PUT("/verify/:id", controllers.Verify())
+	group.POST("/forgot-password", controllers.ForgotPassword())
+	group.PATCH("/reset-password/:resetToken", controllers.ResetPassword())
 }
