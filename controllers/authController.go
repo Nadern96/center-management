@@ -21,6 +21,7 @@ import (
 )
 
 var userCollection *mongo.Collection = db.GetCollection(db.Client, "user")
+var otpCollection *mongo.Collection = db.GetCollection(db.Client, "otp")
 var validate = validator.New()
 
 func hashPassword(password string) string {
@@ -98,11 +99,29 @@ func SignUp() gin.HandlerFunc {
 		token, refreshToken, _ := utils.TokenGenerator(&user)
 		user.Token = &token
 		user.RefreshToken = &refreshToken
+		user.IsVerified, user.IsActive = false, false
 
 		res, insertErr := userCollection.InsertOne(ctx, user)
 		if insertErr != nil {
 			log.Println(insertErr)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": insertErr.Error()})
+			return
+		}
+
+		otp := utils.GenerateOTP()
+		err = utils.SendEmail(*user.Email, otp)
+		if err != nil {
+			log.Println("send email: ", err)
+		}
+
+		otpObj := models.OTP{
+			Otp:         otp,
+			GeneratedAt: time.Now().Unix(),
+			UserId:      user.ID.Hex(),
+		}
+		_, insertErr = otpCollection.InsertOne(ctx, otpObj)
+		if insertErr != nil {
+			log.Println("otp collection: ", insertErr)
 			return
 		}
 		c.JSON(http.StatusCreated, res)
@@ -136,6 +155,12 @@ func SignIn() gin.HandlerFunc {
 			return
 		}
 
+		if !foundUser.IsVerified {
+			log.Println("User is not verified")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "User is not verified"})
+			return
+		}
+
 		token, refreshToken, _ := utils.TokenGenerator(&foundUser)
 		utils.UpdateAllTokens(token, refreshToken, foundUser.ID)
 		if err != nil {
@@ -143,5 +168,56 @@ func SignIn() gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusFound, foundUser)
+	}
+}
+
+func Verify() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.Param("id")
+
+		if id == "" {
+			c.Header("Content-Type", "application/json")
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid argument"})
+			c.Abort()
+			return
+		}
+		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+		defer cancel()
+
+		var otp models.OTP
+		if err := c.BindJSON(&otp); err != nil {
+			log.Println(err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		err := otpCollection.FindOne(ctx, bson.M{"_id": id}).Decode(&otp)
+		if err != nil {
+			log.Println(err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid otp"})
+			return
+		}
+
+		generatedAtTime := time.Unix(otp.GeneratedAt, 0)
+		expiryTime := generatedAtTime.Add(time.Hour * 1)
+		now := time.Now()
+
+		if now.Unix() > expiryTime.Unix() {
+			log.Println(err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Otp expired"})
+			return
+		}
+
+		userId, _ := primitive.ObjectIDFromHex(id)
+		filter := bson.M{"_id": userId}
+		change := bson.M{"$set": bson.M{"isVerified": true}}
+		_, err = userCollection.UpdateOne(ctx, filter, change)
+		if err != nil {
+			log.Println(err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, "User Successfully Verfied!")
 	}
 }

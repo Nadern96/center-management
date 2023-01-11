@@ -30,7 +30,7 @@ func main() {
 
 	router.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"data": "Hello from Gin-gonic & mongoDB",
+			"data": "Hello from center management",
 		})
 	})
 

@@ -9,4 +9,5 @@ func AuthRoutes(routes *gin.Engine) {
 	group := routes.Group("/api/auth")
 	group.POST("/signup", controllers.SignUp())
 	group.POST("/signin", controllers.SignIn())
+	group.PUT("/verify/:id", controllers.Verify())
 }

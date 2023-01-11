@@ -16,4 +16,11 @@ type User struct {
 	CreatedAt    int64              `json:"createdAt" bson:"createdAt"`
 	UpdatedAt    int64              `json:"updatedAt" bson:"updatedAt"`
 	IsActive     bool               `json:"isActive" bson:"isActive"`
+	IsVerified   bool               `json:"isVerified" bson:"isVerified"`
+}
+
+type OTP struct {
+	UserId      string `json:"_id" bson:"_id"`
+	GeneratedAt int64  `json:"generatedAt" bson:"generatedAt"`
+	Otp         string `json:"otp" bson:"otp"`
 }
